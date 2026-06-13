@@ -1,11 +1,11 @@
 import asyncio
 import json
-import logging
 
 from redis.asyncio import Redis
-from redis_connection import redis_connection
-from settings import config
-logger = logging.getLogger(__name__)
+from app.db.redis_connection import redis_connection
+from app.core import config
+from app.core import get_custom_logger
+logger = get_custom_logger("RedisWorker")
 
 
 

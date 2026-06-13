@@ -1,10 +1,10 @@
 # redis_client.py
 from redis.asyncio import Redis as AsyncRedis
+from langgraph.checkpoint.redis import AsyncRedisSaver
 from redis.asyncio import ConnectionPool
-from settings import config
-import logging
-
-logger = logging.getLogger(__name__)
+from app.core import config
+from app.core import get_custom_logger
+logger = get_custom_logger("RedisConnection")
 
 class RedisConnection:
     def __init__(self):
@@ -20,10 +20,19 @@ class RedisConnection:
             retry_on_timeout=True,
         )
         self._client = AsyncRedis(connection_pool=self._pool)
+        self._redis_checkpoint_saver = AsyncRedisSaver(
+            redis_client=self._client,
+            ttl={"default_ttl": 600, "refresh_on_read": True},
+        )
+
     
     def get_client(self) -> AsyncRedis:
         """Get Redis client."""
         return self._client
+
+    def get_langgraph_redis_saver(self) -> AsyncRedisSaver:
+        """Get LangGraph Redis saver."""
+        return self._redis_checkpoint_saver
 
     async def ping(self) -> bool:
         """Test connection."""

@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Redis Chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117;
+      color: #e6edf3;
+      height: 100vh;
+      display: flex;
+    }
+
+    .sidebar {
+      width: 260px;
+      background: #161b22;
+      border-right: 1px solid #21262d;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header {
+      padding: 1rem;
+      border-bottom: 1px solid #21262d;
+    }
+
+    .new-chat-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.65rem 1rem;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: transparent;
+      color: #e6edf3;
+      font: inherit;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .new-chat-btn:hover {
+      background: #21262d;
+    }
+
+    .thread-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .thread-item {
+      padding: 0.65rem 0.75rem;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      color: #c9d1d9;
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .thread-item:hover {
+      background: #21262d;
+    }
+
+    .thread-item.active {
+      background: #21262d;
+      color: #fff;
+    }
+
+    .sidebar-footer {
+      padding: 0.75rem 1rem;
+      border-top: 1px solid #21262d;
+      font-size: 0.75rem;
+      color: #8b949e;
+    }
+
+    .main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid #21262d;
+      background: #161b22;
+    }
+
+    header h1 { font-size: 1.1rem; font-weight: 600; }
+
+    .thread-id {
+      font-size: 0.75rem;
+      color: #8b949e;
+      font-family: monospace;
+      margin-top: 0.25rem;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .message {
+      max-width: 75%;
+      padding: 0.75rem 1rem;
+      border-radius: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end;
+      background: #238636;
+      border-bottom-right-radius: 4px;
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+      background: #21262d;
+      border-bottom-left-radius: 4px;
+    }
+
+    .message.streaming::after {
+      content: "▋";
+      animation: blink 1s step-end infinite;
+      margin-left: 2px;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      color: #8b949e;
+    }
+
+    footer {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid #21262d;
+      background: #161b22;
+    }
+
+    form {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    textarea {
+      flex: 1;
+      resize: none;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      background: #0d1117;
+      color: #e6edf3;
+      padding: 0.75rem 1rem;
+      font: inherit;
+      min-height: 48px;
+      max-height: 120px;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #58a6ff;
+    }
+
+    button[type="submit"] {
+      border: none;
+      border-radius: 8px;
+      background: #238636;
+      color: #fff;
+      padding: 0 1.25rem;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    button[type="submit"]:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .error {
+      color: #f85149;
+      font-size: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    @media (max-width: 768px) {
+      .sidebar {
+        width: 200px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <button class="new-chat-btn" id="newChatBtn" type="button">+ New chat</button>
+    </div>
+    <div class="thread-list" id="threadList"></div>
+    <div class="sidebar-footer">Conversations saved in Redis</div>
+  </aside>
+
+  <div class="main">
+    <header>
+      <h1>Redis Chat</h1>
+      <div class="thread-id" id="threadLabel">New conversation</div>
+    </header>
+
+    <div id="messages">
+      <div class="empty-state" id="emptyState">Send a message to start chatting</div>
+    </div>
+
+    <footer>
+      <form id="chatForm">
+        <textarea id="input" placeholder="Type a message..." rows="1" autofocus></textarea>
+        <button type="submit" id="sendBtn">Send</button>
+      </form>
+      <div class="error" id="error"></div>
+    </footer>
+  </div>
+
+  <script>
+    const THREADS_KEY = "chat_threads";
+    const ACTIVE_THREAD_KEY = "active_thread_id";
+
+    const messagesEl = document.getElementById("messages");
+    const threadListEl = document.getElementById("threadList");
+    const newChatBtn = document.getElementById("newChatBtn");
+    const form = document.getElementById("chatForm");
+    const input = document.getElementById("input");
+    const sendBtn = document.getElementById("sendBtn");
+    const errorEl = document.getElementById("error");
+    const threadLabel = document.getElementById("threadLabel");
+
+    let threadId = localStorage.getItem(ACTIVE_THREAD_KEY);
+    let isStreaming = false;
+
+    function getThreads() {
+      try {
+        return JSON.parse(localStorage.getItem(THREADS_KEY) || "[]");
+      } catch {
+        return [];
+      }
+    }
+
+    function saveThreads(threads) {
+      localStorage.setItem(THREADS_KEY, JSON.stringify(threads));
+    }
+
+    function upsertThread(id, title) {
+      const threads = getThreads().filter((t) => t.id !== id);
+      threads.unshift({
+        id,
+        title: title.slice(0, 40) + (title.length > 40 ? "…" : ""),
+        updatedAt: Date.now(),
+      });
+      saveThreads(threads);
+      renderThreadList();
+    }
+
+    function renderThreadList() {
+      const threads = getThreads();
+      threadListEl.innerHTML = "";
+
+      if (!threads.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "padding: 0.75rem; color: #8b949e; font-size: 0.85rem;";
+        empty.textContent = "No chats yet";
+        threadListEl.appendChild(empty);
+        return;
+      }
+
+      threads.forEach((thread) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "thread-item" + (thread.id === threadId ? " active" : "");
+        btn.textContent = thread.title || "New chat";
+        btn.title = thread.title;
+        btn.addEventListener("click", () => selectThread(thread.id));
+        threadListEl.appendChild(btn);
+      });
+    }
+
+    function updateThreadLabel() {
+      if (!threadId) {
+        threadLabel.textContent = "New conversation";
+        return;
+      }
+      threadLabel.textContent = `thread: ${threadId.slice(0, 8)}…`;
+    }
+
+    function hideEmptyState() {
+      const el = document.getElementById("emptyState");
+      if (el) el.remove();
+    }
+
+    function showEmptyState() {
+      clearMessages();
+    }
+
+    function appendMessage(role, content = "") {
+      hideEmptyState();
+      const el = document.createElement("div");
+      el.className = `message ${role}`;
+      el.textContent = content;
+      messagesEl.appendChild(el);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+      return el;
+    }
+
+    function clearMessages() {
+      messagesEl.innerHTML = "";
+      const el = document.createElement("div");
+      el.className = "empty-state";
+      el.id = "emptyState";
+      el.textContent = "Send a message to start chatting";
+      messagesEl.appendChild(el);
+    }
+
+    async function loadHistory(id) {
+      clearMessages();
+      errorEl.textContent = "";
+      try {
+        const res = await fetch(`/chat/${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.messages.length) return;
+        hideEmptyState();
+        data.messages.forEach((msg) => appendMessage(msg.role, msg.content));
+      } catch (_) {}
+    }
+
+    function startNewChat() {
+      if (isStreaming) return;
+      threadId = null;
+      localStorage.removeItem(ACTIVE_THREAD_KEY);
+      updateThreadLabel();
+      renderThreadList();
+      showEmptyState();
+      errorEl.textContent = "";
+      input.focus();
+    }
+
+    async function selectThread(id) {
+      if (isStreaming || id === threadId) return;
+      threadId = id;
+      localStorage.setItem(ACTIVE_THREAD_KEY, threadId);
+      updateThreadLabel();
+      renderThreadList();
+      await loadHistory(threadId);
+      input.focus();
+    }
+
+    async function streamChat(message) {
+      isStreaming = true;
+      sendBtn.disabled = true;
+      newChatBtn.disabled = true;
+      errorEl.textContent = "";
+
+      appendMessage("user", message);
+      const assistantEl = appendMessage("assistant");
+      assistantEl.classList.add("streaming");
+
+      const isNewThread = !threadId;
+
+      try {
+        const response = await fetch("/agent/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message, thread_id: threadId }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Request failed (${response.status})`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() || "";
+
+          for (const part of parts) {
+            const line = part.trim();
+            if (!line.startsWith("data: ")) continue;
+
+            const data = JSON.parse(line.slice(6));
+
+            if (data.type === "thread_id") {
+              threadId = data.thread_id;
+              localStorage.setItem(ACTIVE_THREAD_KEY, threadId);
+              updateThreadLabel();
+              if (isNewThread) {
+                upsertThread(threadId, message);
+              }
+            }
+
+            if (data.type === "char") {
+              assistantEl.textContent += data.content;
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            if (data.type === "rollback") {
+              await loadHistory(threadId);
+              throw new Error("Request failed — conversation restored to previous state");
+            }
+
+            if (data.type === "error") {
+              throw new Error(data.message);
+            }
+          }
+        }
+
+        assistantEl.classList.remove("streaming");
+
+        if (threadId) {
+          upsertThread(threadId, getThreads().find((t) => t.id === threadId)?.title || message);
+        }
+      } catch (err) {
+        if (threadId) {
+          await loadHistory(threadId);
+        }
+        throw err;
+      }
+    }
+
+    newChatBtn.addEventListener("click", startNewChat);
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const message = input.value.trim();
+      if (!message || isStreaming) return;
+
+      input.value = "";
+      try {
+        await streamChat(message);
+      } catch (err) {
+        errorEl.textContent = err.message || "Something went wrong";
+      } finally {
+        isStreaming = false;
+        sendBtn.disabled = false;
+        newChatBtn.disabled = false;
+        renderThreadList();
+        input.focus();
+      }
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    renderThreadList();
+    updateThreadLabel();
+    if (threadId) {
+      loadHistory(threadId);
+    }
+  </script>
+</body>
+</html>
