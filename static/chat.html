@@ -124,7 +124,6 @@
       padding: 0.75rem 1rem;
       border-radius: 12px;
       line-height: 1.5;
-      white-space: pre-wrap;
       word-break: break-word;
     }
 
@@ -132,15 +131,121 @@
       align-self: flex-end;
       background: #238636;
       border-bottom-right-radius: 4px;
+      white-space: pre-wrap;
     }
 
     .message.assistant {
       align-self: flex-start;
       background: #21262d;
       border-bottom-left-radius: 4px;
+      max-width: 85%;
     }
 
-    .message.streaming::after {
+    .message-content h2 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: #58a6ff;
+      margin: 0.85rem 0 0.45rem;
+    }
+
+    .message-content h2:first-child {
+      margin-top: 0;
+    }
+
+    .message-content h3 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #79c0ff;
+      margin: 0.65rem 0 0.35rem;
+    }
+
+    .message-content p {
+      margin: 0.35rem 0;
+    }
+
+    .message-content ul {
+      margin: 0.45rem 0 0.45rem 1.25rem;
+      padding: 0;
+    }
+
+    .message-content li {
+      margin: 0.2rem 0;
+    }
+
+    .message-content code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.88em;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      padding: 0.1rem 0.35rem;
+    }
+
+    .message-content pre {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 0.85rem;
+      overflow-x: auto;
+      margin: 0.55rem 0;
+    }
+
+    .message-content pre code {
+      display: block;
+      border: none;
+      padding: 0;
+      background: transparent;
+      white-space: pre;
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+
+    .message-thinking {
+      font-size: 0.82rem;
+      color: #8b949e;
+      border-left: 3px solid #388bfd;
+      padding: 0.35rem 0 0.35rem 0.75rem;
+      margin-bottom: 0.65rem;
+    }
+
+    .message-thinking.is-live {
+      display: block;
+    }
+
+    .message-thinking:not(.is-live) {
+      display: none;
+      margin: 0;
+      padding: 0;
+      border: none;
+    }
+
+    .thinking-label {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #6e7681;
+      margin-bottom: 0.35rem;
+    }
+
+    .thinking-body {
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message-thinking:empty {
+      display: none;
+      margin: 0;
+      padding: 0;
+      border: none;
+    }
+
+    .thinking-step {
+      display: none;
+    }
+
+    .message.streaming .message-content:not(:empty)::after {
       content: "▋";
       animation: blink 1s step-end infinite;
       margin-left: 2px;
@@ -321,11 +426,157 @@
       clearMessages();
     }
 
+    function escapeHtml(text) {
+      return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function formatInline(text) {
+      return text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    }
+
+    function renderMarkdown(text) {
+      if (!text) return "";
+
+      const codeBlocks = [];
+      const withPlaceholders = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+        const index = codeBlocks.length;
+        const language = lang || "text";
+        codeBlocks.push(
+          `<pre><code class="language-${language}">${escapeHtml(code.replace(/\n$/, ""))}</code></pre>`
+        );
+        return `@@CODE_BLOCK_${index}@@`;
+      });
+
+      const lines = withPlaceholders.split("\n");
+      const html = [];
+      let inList = false;
+
+      const closeList = () => {
+        if (inList) {
+          html.push("</ul>");
+          inList = false;
+        }
+      };
+
+      for (const line of lines) {
+        const codeMatch = line.match(/^@@CODE_BLOCK_(\d+)@@$/);
+        if (codeMatch) {
+          closeList();
+          html.push(codeBlocks[Number(codeMatch[1])]);
+          continue;
+        }
+
+        if (line.startsWith("## ")) {
+          closeList();
+          html.push(`<h2>${formatInline(escapeHtml(line.slice(3)))}</h2>`);
+          continue;
+        }
+
+        if (line.startsWith("### ")) {
+          closeList();
+          html.push(`<h3>${formatInline(escapeHtml(line.slice(4)))}</h3>`);
+          continue;
+        }
+
+        if (/^[-*] /.test(line)) {
+          if (!inList) {
+            html.push("<ul>");
+            inList = true;
+          }
+          html.push(`<li>${formatInline(escapeHtml(line.slice(2)))}</li>`);
+          continue;
+        }
+
+        if (line.trim() === "") {
+          closeList();
+          continue;
+        }
+
+        closeList();
+        html.push(`<p>${formatInline(escapeHtml(line))}</p>`);
+      }
+
+      closeList();
+      return html.join("");
+    }
+
+    function ensureAssistantStructure(el) {
+      if (el.querySelector(".message-content")) return;
+
+      el.textContent = "";
+      const thinkingEl = document.createElement("div");
+      thinkingEl.className = "message-thinking";
+      thinkingEl.innerHTML =
+        '<div class="thinking-label">Thinking</div><div class="thinking-body"></div>';
+      const contentEl = document.createElement("div");
+      contentEl.className = "message-content";
+      el.appendChild(thinkingEl);
+      el.appendChild(contentEl);
+    }
+
+    function getThinkingBody(el) {
+      ensureAssistantStructure(el);
+      return el.querySelector(".message-thinking .thinking-body");
+    }
+
+    function showLiveThinking(el) {
+      ensureAssistantStructure(el);
+      const thinkingEl = el.querySelector(".message-thinking");
+      thinkingEl.classList.add("is-live");
+    }
+
+    function hideThinking(el) {
+      const thinkingEl = el.querySelector(".message-thinking");
+      if (!thinkingEl) return;
+      thinkingEl.classList.remove("is-live");
+      const body = thinkingEl.querySelector(".thinking-body");
+      if (body) {
+        body.textContent = "";
+        body._raw = "";
+      }
+    }
+
+    function startThinkingStep(el) {
+      showLiveThinking(el);
+      const body = getThinkingBody(el);
+      body._raw = "";
+      body.textContent = "";
+    }
+
+    function appendThinkingChar(el, char) {
+      showLiveThinking(el);
+      const body = getThinkingBody(el);
+      body._raw = (body._raw || "") + char;
+      body.textContent = body._raw;
+    }
+
+    function appendThinking(el, text) {
+      showLiveThinking(el);
+      const body = getThinkingBody(el);
+      body._raw = text;
+      body.textContent = text;
+    }
+
+    function setMessageContent(el, role, content) {
+      if (role === "assistant") {
+        ensureAssistantStructure(el);
+        const contentEl = el.querySelector(".message-content");
+        el._rawContent = content;
+        contentEl.innerHTML = renderMarkdown(content);
+      } else {
+        el.textContent = content;
+      }
+    }
+
     function appendMessage(role, content = "") {
       hideEmptyState();
       const el = document.createElement("div");
       el.className = `message ${role}`;
-      el.textContent = content;
+      setMessageContent(el, role, content);
       messagesEl.appendChild(el);
       messagesEl.scrollTop = messagesEl.scrollHeight;
       return el;
@@ -344,7 +595,7 @@
       clearMessages();
       errorEl.textContent = "";
       try {
-        const res = await fetch(`/chat/${id}`);
+        const res = await fetch(`/agent/chat/${id}`);
         if (!res.ok) return;
         const data = await res.json();
         if (!data.messages.length) return;
@@ -424,8 +675,29 @@
               }
             }
 
+            if (data.type === "thinking_start") {
+              startThinkingStep(assistantEl);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            if (data.type === "thinking_char") {
+              appendThinkingChar(assistantEl, data.content);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
+            if (data.type === "thinking_clear") {
+              hideThinking(assistantEl);
+            }
+
+            if (data.type === "thinking") {
+              appendThinking(assistantEl, data.content);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+
             if (data.type === "char") {
-              assistantEl.textContent += data.content;
+              hideThinking(assistantEl);
+              assistantEl._rawContent = (assistantEl._rawContent || "") + data.content;
+              setMessageContent(assistantEl, "assistant", assistantEl._rawContent);
               messagesEl.scrollTop = messagesEl.scrollHeight;
             }
 
@@ -441,6 +713,7 @@
         }
 
         assistantEl.classList.remove("streaming");
+        hideThinking(assistantEl);
 
         if (threadId) {
           upsertThread(threadId, getThreads().find((t) => t.id === threadId)?.title || message);

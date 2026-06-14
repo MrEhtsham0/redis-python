@@ -24,21 +24,31 @@ async def chat_stream_endpoint(request: ChatRequest):
         yield _sse_event({"type": "thread_id", "thread_id": thread_id})
 
         agent = get_agent()
-        config = thread_config(thread_id)
-        checkpoint_id = await get_checkpoint_id(config)
+        run_config = thread_config(thread_id)
+        checkpoint_id = await get_checkpoint_id(run_config)
 
         try:
             async for chunk in agent.astream(
                 {"messages": [HumanMessage(content=request.message)]},
-                config=config,
+                config=run_config,
                 stream_mode="custom",
             ):
-                content = chunk.get("content") if isinstance(chunk, dict) else None
-                if content:
-                    yield _sse_event({"type": "char", "content": str(content)})
+                if not isinstance(chunk, dict):
+                    continue
+
+                event_type = chunk.get("type", "char")
+                content = chunk.get("content")
+
+                if content is None or content == "":
+                    if event_type not in ("thinking_start", "thinking_clear"):
+                        continue
+                    yield _sse_event({"type": event_type, "content": ""})
+                    continue
+
+                yield _sse_event({"type": event_type, "content": str(content)})
         except Exception as e:
-            await rollback_thread(config, checkpoint_id)
-            logger.error(f"Chat stream error: {e}")
+            await rollback_thread(run_config, checkpoint_id)
+            logger.error(f"Chat stream error: {e}", exc_info=True)
             yield _sse_event({"type": "rollback"})
             yield _sse_event({"type": "error", "message": str(e)})
             return

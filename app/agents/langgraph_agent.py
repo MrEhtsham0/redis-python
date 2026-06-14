@@ -1,47 +1,75 @@
-import logging
-from typing import Annotated
-
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_openai import ChatOpenAI
-from langgraph.config import get_stream_writer
-from langgraph.graph import END, START, StateGraph, add_messages
-from typing_extensions import TypedDict
+from langgraph.graph import END, START, StateGraph
 
-from app.db.redis_connection import redis_connection
+from app.agents.llm import reset_llm
+from app.agents.nodes.global_supervisor_node import global_supervisor_node
+from app.agents.nodes.tavily_web_search import web_search_node
+from app.agents.state import AgentState
+from app.agents.nodes.code_writer_node import code_writer_node
 from app.core.settings import config
+from app.db.redis_connection import redis_connection
+from app.core import get_custom_logger
 
-logger = logging.getLogger(__name__)
-
-
-class BasicChatState(TypedDict):
-    messages: Annotated[list, add_messages]
-
-
-_llm: ChatOpenAI | None = None
-_agent = None
-
-
-def _get_llm() -> ChatOpenAI:
-    global _llm
-    if _llm is None:
-        _llm = ChatOpenAI(
-            model=config.openai_model,
-            api_key=config.openai_api_key_str,
-            streaming=True,
-        )
-    return _llm
+logger = get_custom_logger("LangGraphAgent Agent")
 
 
 def thread_config(thread_id: str) -> dict:
     return {"configurable": {"thread_id": thread_id}}
 
 
-def _normalize_content(content: str | list) -> str:
-    if not content:
-        return ""
-    if isinstance(content, list):
-        return "".join(part.get("text", "") for part in content if isinstance(part, dict))
-    return content
+_agent = None
+
+
+def _route_after_supervisor(state: AgentState) -> str:
+    return state.get("next_agent", "direct_response")
+
+
+def _build_graph() -> StateGraph:
+    graph = StateGraph(AgentState)
+    graph.add_node("supervisor", global_supervisor_node)
+    graph.add_node("code_writer", code_writer_node)
+    graph.add_node("web_search", web_search_node)
+
+    graph.add_edge(START, "supervisor")
+    graph.add_conditional_edges(
+        "supervisor",
+        _route_after_supervisor,
+        {
+            "code_writer": "code_writer",
+            "web_search": "web_search",
+            "direct_response": END,
+        },
+    )
+    graph.add_edge("code_writer", END)
+    graph.add_edge("web_search", END)
+    return graph
+
+
+async def initialize_agent():
+    global _agent
+    reset_llm()
+    logger.info(f"Using OpenAI model: {config.openai_model}")
+    checkpointer = redis_connection.get_langgraph_redis_saver()
+    await checkpointer.asetup()
+
+    graph = _build_graph()
+    _agent = graph.compile(checkpointer=checkpointer)
+    logger.info("LangGraph compiled with supervisor routing and Redis checkpointing.")
+    return _agent
+
+
+def get_agent():
+    if _agent is None:
+        raise RuntimeError("Chat agent is not initialized. Call initialize_agent() on startup.")
+    return _agent
+
+
+def _message_role(message: BaseMessage) -> str:
+    if isinstance(message, HumanMessage):
+        return "user"
+    if isinstance(message, AIMessage):
+        return "assistant"
+    return message.type
 
 
 async def get_checkpoint_id(config: dict) -> str | None:
@@ -51,7 +79,6 @@ async def get_checkpoint_id(config: dict) -> str | None:
 
 
 async def _delete_thread_keys(thread_id: str) -> None:
-    """Fallback cleanup when RediSearch index is unavailable."""
     client = redis_connection.get_client()
     patterns = [
         f"checkpoint:{thread_id}:*",
@@ -64,7 +91,6 @@ async def _delete_thread_keys(thread_id: str) -> None:
 
 
 async def rollback_thread(config: dict, checkpoint_id: str | None) -> None:
-    """Restore thread to the checkpoint from before the failed turn."""
     agent = get_agent()
     thread_id = config["configurable"]["thread_id"]
     checkpointer = redis_connection.get_langgraph_redis_saver()
@@ -86,80 +112,6 @@ async def rollback_thread(config: dict, checkpoint_id: str | None) -> None:
         logger.info(f"Rolled back thread {thread_id} to checkpoint {checkpoint_id}")
     except Exception:
         logger.exception(f"Failed to rollback thread {thread_id}")
-
-
-async def chatbot(state: BasicChatState) -> dict:
-    logger.info("Streaming LLM response.")
-    writer = get_stream_writer()
-    full_response = ""
-
-    try:
-        async for chunk in _get_llm().astream(state["messages"]):
-            token = _normalize_content(chunk.content)
-            if not token:
-                continue
-            full_response += token
-            for char in token:
-                writer({"content": char})
-    except Exception:
-        logger.exception("LLM streaming failed")
-        raise
-
-    if not full_response.strip():
-        raise RuntimeError("LLM returned an empty response")
-
-    logger.info("LLM response received.")
-    return {"messages": [AIMessage(content=full_response)]}
-
-
-def _build_graph() -> StateGraph:
-    graph = StateGraph(BasicChatState)
-    graph.add_node("chatbot", chatbot)
-    graph.add_edge(START, "chatbot")
-    graph.add_edge("chatbot", END)
-    return graph
-
-
-async def initialize_agent():
-    global _agent
-    checkpointer = redis_connection.get_langgraph_redis_saver()
-    await checkpointer.asetup()
-
-    graph = _build_graph()
-    _agent = graph.compile(checkpointer=checkpointer)
-    logger.info("LangGraph compiled with Redis checkpointing.")
-    return _agent
-
-
-def get_agent():
-    if _agent is None:
-        raise RuntimeError("Chat agent is not initialized. Call initialize_agent() on startup.")
-    return _agent
-
-
-def _message_role(message: BaseMessage) -> str:
-    if isinstance(message, HumanMessage):
-        return "user"
-    if isinstance(message, AIMessage):
-        return "assistant"
-    return message.type
-
-
-async def chat(message: str, thread_id: str) -> str:
-    agent = get_agent()
-    config = thread_config(thread_id)
-    checkpoint_id = await get_checkpoint_id(config)
-
-    try:
-        result = await agent.ainvoke(
-            {"messages": [HumanMessage(content=message)]},
-            config=config,
-        )
-        last_message = result["messages"][-1]
-        return last_message.content
-    except Exception:
-        await rollback_thread(config, checkpoint_id)
-        raise
 
 
 async def get_thread_messages(thread_id: str) -> list[dict[str, str]]:

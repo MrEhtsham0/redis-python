@@ -1,0 +1,143 @@
+from langchain_core.messages import BaseMessage
+from langgraph.config import get_stream_writer
+
+from app.agents.llm import get_llm, normalize_content
+
+
+def stream_event(event_type: str, content: str) -> None:
+    writer = get_stream_writer()
+    writer({"type": event_type, "content": content})
+
+
+def start_thinking_step() -> None:
+    stream_event("thinking_start", "")
+
+
+def stream_thinking_char(char: str) -> None:
+    stream_event("thinking_char", char)
+
+
+def stream_thinking(text: str) -> None:
+    start_thinking_step()
+    for char in text:
+        stream_thinking_char(char)
+
+
+def clear_thinking() -> None:
+    stream_event("thinking_clear", "")
+
+
+class _ThinkingStreamParser:
+    def __init__(self, *, tag: str = "thinking", stream_output: bool = False) -> None:
+        self.open_tag = f"<{tag}>"
+        self.close_tag = f"</{tag}>"
+        self.stream_output = stream_output
+        self.buffer = ""
+        self.phase = "before"
+        self.thinking = ""
+        self.output = ""
+        self._thinking_step_open = False
+
+    def push(self, token: str) -> None:
+        self.buffer += token
+
+        while True:
+            if self.phase == "before":
+                open_idx = self.buffer.find(self.open_tag)
+                if open_idx == -1:
+                    if len(self.buffer) > len(self.open_tag):
+                        self.buffer = self.buffer[-len(self.open_tag) :]
+                    return
+
+                self.buffer = self.buffer[open_idx + len(self.open_tag) :]
+                self.phase = "in"
+                if not self._thinking_step_open:
+                    start_thinking_step()
+                    self._thinking_step_open = True
+                continue
+
+            if self.phase == "in":
+                close_idx = self.buffer.find(self.close_tag)
+                if close_idx == -1:
+                    holdback = len(self.close_tag) - 1
+                    safe_end = max(0, len(self.buffer) - holdback)
+                    chunk = self.buffer[:safe_end]
+                    self.buffer = self.buffer[safe_end:]
+                    self._append_thinking(chunk)
+                    return
+
+                chunk = self.buffer[:close_idx]
+                self.buffer = self.buffer[close_idx + len(self.close_tag) :]
+                self._append_thinking(chunk)
+                self.phase = "after"
+                if self.stream_output:
+                    clear_thinking()
+                continue
+
+            if self.phase == "after":
+                if self.buffer:
+                    if self.stream_output:
+                        for char in self.buffer:
+                            stream_event("char", char)
+                    self.output += self.buffer
+                    self.buffer = ""
+                return
+
+    def _append_thinking(self, text: str) -> None:
+        if not text:
+            return
+        self.thinking += text
+        for char in text:
+            stream_thinking_char(char)
+
+    @property
+    def saw_thinking(self) -> bool:
+        return self.phase != "before"
+
+
+async def stream_llm_tagged_thinking(
+    messages: list[BaseMessage],
+    *,
+    tag: str = "thinking",
+    stream_output: bool = False,
+) -> tuple[str, str]:
+    """
+    Stream model reasoning from <thinking> tags to the UI.
+    Returns (thinking_text, trailing_output_for_parsing or display).
+    """
+    parser = _ThinkingStreamParser(tag=tag, stream_output=stream_output)
+    full_raw = ""
+
+    async for chunk in get_llm().astream(messages):
+        token = normalize_content(chunk.content)
+        if not token:
+            continue
+        full_raw += token
+        parser.push(token)
+
+    if parser.phase == "after" and parser.buffer:
+        parser.push("")
+
+    if not parser.saw_thinking:
+        if stream_output:
+            for char in full_raw:
+                stream_event("char", char)
+        return "", full_raw.strip()
+
+    return parser.thinking.strip(), parser.output.strip()
+
+
+async def stream_llm_thinking(messages: list[BaseMessage]) -> str:
+    _, output = await stream_llm_tagged_thinking(messages)
+    return output
+
+
+async def stream_llm_response(messages: list[BaseMessage]) -> str:
+    _, output = await stream_llm_tagged_thinking(messages, stream_output=True)
+    return output
+
+
+def stream_text(text: str) -> None:
+    clear_thinking()
+    for char in text:
+        stream_event("char", char)

@@ -1,4 +1,12 @@
 # import asyncio
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    message=".*Pydantic serializer warnings.*",
+)
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
