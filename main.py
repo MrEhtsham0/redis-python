@@ -1,12 +1,4 @@
 # import asyncio
-import warnings
-
-warnings.filterwarnings(
-    "ignore",
-    category=UserWarning,
-    message=".*Pydantic serializer warnings.*",
-)
-
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
@@ -17,7 +9,7 @@ from app.agents.langgraph_agent import initialize_agent
 # from app.db.redis_worker import recover_stuck_jobs, run_worker
 from app.core import get_custom_logger
 from app.routes.api import router
-
+from app.db.postgres_connection import create_tables, dispose_db, init_db
 
 logger = get_custom_logger("main.py")
 
@@ -32,22 +24,20 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Redis connection failed: {e}")
         raise
 
-    # worker_tasks = []
-    # client = redis_connection.get_client()
-    # await recover_stuck_jobs(client)
-    # for worker_id in range(1, config.worker_count + 1):
-        # worker_tasks.append(
-            # asyncio.create_task(run_worker(worker_id=worker_id, manage_connection=False))
-        # )
-    # logger.info(f"✅ Started {config.worker_count} job worker(s)")
+    try:
+        await init_db()
+        await create_tables()
+        logger.info("✅ Postgres connected and tables ready")
+    except Exception as e:
+        logger.error(f"❌ Postgres setup failed: {e}")
+        raise
+
     await initialize_agent()
 
     yield
 
     # Shutdown
-    # for task in worker_tasks:
-        # task.cancel()
-    # await asyncio.gather(*worker_tasks, return_exceptions=True)
+    await dispose_db()
     await redis_connection.close()
     logger.info("❌ Redis connection closed")
 

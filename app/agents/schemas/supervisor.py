@@ -6,7 +6,7 @@ from app.agents.schemas.parse import parse_llm_json
 
 
 class SupervisorDecision(BaseModel):
-    agent: Literal["code_writer", "web_search", "direct_response"]
+    agent: Literal["code_writer", "web_search", "postgres_db", "direct_response"]
     reason: str = Field(description="Short explanation for routing choice")
     needs_clarification: bool = False
     response: str | None = None

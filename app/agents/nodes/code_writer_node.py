@@ -9,7 +9,7 @@ from app.agents.state import AgentState
 from app.agents.streaming import stream_llm_tagged_thinking, stream_text
 from app.core import get_custom_logger
 
-logger = get_custom_logger(__name__)
+logger = get_custom_logger("code_writer_node")
 
 CODE_WRITER_PROMPT = load_prompt_with_thinking("code_writer_prompt.md")
 

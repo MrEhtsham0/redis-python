@@ -2,10 +2,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 
 from app.agents.llm import reset_llm
+from app.agents.nodes.code_writer_node import code_writer_node
 from app.agents.nodes.global_supervisor_node import global_supervisor_node
 from app.agents.nodes.tavily_web_search import web_search_node
 from app.agents.state import AgentState
-from app.agents.nodes.code_writer_node import code_writer_node
+from app.agents.mcp.postgres_mcp import init_postgres_mcp, reset_postgres_mcp
+from app.agents.nodes.postgres_mcp_node import postgres_mcp_node
 from app.core.settings import config
 from app.db.redis_connection import redis_connection
 from app.core import get_custom_logger
@@ -29,6 +31,7 @@ def _build_graph() -> StateGraph:
     graph.add_node("supervisor", global_supervisor_node)
     graph.add_node("code_writer", code_writer_node)
     graph.add_node("web_search", web_search_node)
+    graph.add_node("postgres_db", postgres_mcp_node)
 
     graph.add_edge(START, "supervisor")
     graph.add_conditional_edges(
@@ -37,11 +40,13 @@ def _build_graph() -> StateGraph:
         {
             "code_writer": "code_writer",
             "web_search": "web_search",
+            "postgres_db": "postgres_db",
             "direct_response": END,
         },
     )
     graph.add_edge("code_writer", END)
     graph.add_edge("web_search", END)
+    graph.add_edge("postgres_db", END)
     return graph
 
 
@@ -51,6 +56,11 @@ async def initialize_agent():
     logger.info(f"Using OpenAI model: {config.openai_model}")
     checkpointer = redis_connection.get_langgraph_redis_saver()
     await checkpointer.asetup()
+
+    try:
+        await init_postgres_mcp()
+    except Exception as exc:
+        logger.warning(f"Postgres MCP tools not loaded (postgres_db agent disabled): {exc}")
 
     graph = _build_graph()
     _agent = graph.compile(checkpointer=checkpointer)
